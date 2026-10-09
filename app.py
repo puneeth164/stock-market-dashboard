@@ -46,10 +46,11 @@ st.markdown("""
 .status.closed { background: rgba(42,120,214,0.12); border-color: rgba(42,120,214,0.55); }
 .status.closed .dot { background: #2a78d6; }
 .status .count { font-weight: 700; }
-.alert {
-    max-width: 920px; margin: 0.4rem auto 0.8rem; padding: 0.7rem 1.1rem; border-radius: 12px;
-    background: rgba(227,73,72,0.12); border: 1px solid rgba(227,73,72,0.6); font-size: 0.92rem;
-}
+.status.premarket {background: rgba(235, 104, 52, 0.12);border-color: rgba(235, 104, 52, 0.55);}
+.status.premarket .dot {background: #eb6834;box-shadow: 0 0 0 4px rgba(235, 104, 52, 0.2);}
+.status.afterhours {background: rgba(74, 58, 167, 0.12); border-color: rgba(74, 58, 167, 0.55);}
+.status.afterhours .dot {background: #4a3aa7;box-shadow: 0 0 0 4px rgba(74, 58, 167, 0.2);}
+.alert {max-width: 920px; margin: 0.4rem auto 0.8rem; padding: 0.7rem 1.1rem; border-radius: 12px; background: rgba(227,73,72,0.12); border: 1px solid rgba(227,73,72,0.6); font-size: 0.92rem; }
 .alert b { color: #e34948; }
 </style>
 """, unsafe_allow_html=True)
@@ -114,6 +115,56 @@ except Exception as e:
 ET = ZoneInfo("America/New_York")
 
 
+def get_market_status():
+    """Determine the US stock market session using Eastern Time."""
+
+    now = datetime.now(ET)
+    current_time = now.time()
+
+    # Weekend
+    if now.weekday() >= 5:
+        return (
+            "closed",
+            "Market closed",
+            "The US stock market is closed for the weekend."
+        )
+
+    premarket_start = datetime.strptime("04:00", "%H:%M").time()
+    market_open = datetime.strptime("09:30", "%H:%M").time()
+    market_close = datetime.strptime("16:00", "%H:%M").time()
+    afterhours_end = datetime.strptime("20:00", "%H:%M").time()
+
+    # Pre-market: 4:00 AM - 9:30 AM ET
+    if premarket_start <= current_time < market_open:
+        return (
+            "premarket",
+            "Pre-market",
+            "Pre-market trading · 4:00 AM–9:30 AM ET"
+        )
+
+    # Regular session: 9:30 AM - 4:00 PM ET
+    if market_open <= current_time < market_close:
+        return (
+            "open",
+            "Market open",
+            "Regular trading · 9:30 AM–4:00 PM ET"
+        )
+
+    # After-hours: 4:00 PM - 8:00 PM ET
+    if market_close <= current_time < afterhours_end:
+        return (
+            "afterhours",
+            "After-hours",
+            "Extended-hours trading · 4:00 PM–8:00 PM ET"
+        )
+
+    # Outside trading sessions
+    return (
+        "closed",
+        "Market closed",
+        "Outside trading hours · Regular trading begins at 9:30 AM ET."
+    )
+
 def next_market_open():
     """Next 9:30 AM ET on a weekday (US holidays are not taken into account)."""
     now = datetime.now(ET)
@@ -141,22 +192,31 @@ def overview():
     """).iloc[0]
 
     last = k.last_bar
-    live = last is not None and (datetime.now(timezone.utc) - last).total_seconds() < 600
-    if live:
-        st.markdown('<div class="status open"><div class="head"><span class="dot"></span>Market open</div>'
-                    '<div class="body">Live data · new bars arrive every minute</div></div>',
-                    unsafe_allow_html=True)
-    else:
-        nxt = next_market_open()
-        left = nxt - datetime.now(ET)
-        h, m = divmod(int(left.total_seconds() // 60), 60)
-        when = f" Latest bar: {last:%a %b %d, %H:%M} UTC." if last is not None else ""
-        st.markdown('<div class="status closed"><div class="head"><span class="dot"></span>Market closed</div>'
-                    '<div class="body">US market trades 9:30 AM-4:00 PM ET, Monday-Friday. '
-                    f'Showing the most recent trading session.{when}</div>'
-                    f'<div class="body">Opens in <span class="count">{h} h {m:02d} min</span> '
-                    f'({nxt:%a %I:%M %p} ET)</div></div>', unsafe_allow_html=True)
+    status_type, status_title, status_message = get_market_status()
 
+    # Check price data freshness independently of market hours.
+    data_fresh = (
+        last is not None
+        and (datetime.now(timezone.utc) - last).total_seconds() < 600
+    )
+
+    if data_fresh:
+        freshness_message = "Price data is recent."
+    else:
+        freshness_message = "Price data may be stale."
+
+    st.markdown(
+        f"""
+        <div class="status {status_type}">
+            <div class="head">
+                <span class="dot"></span>{status_title}
+            </div>
+            <div class="body">{status_message}</div>
+            <div class="body">{freshness_message}</div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
     alerts = q("""
         SELECT s.symbol, o.reason FROM outliers o
         JOIN price_bars p ON o.bar_id = p.bar_id JOIN stocks s ON p.stock_id = s.stock_id
